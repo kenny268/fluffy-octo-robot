@@ -122,7 +122,6 @@ Hardware: Apple MPS. Metrics: **best** validation mIoU and pixel accuracy. Per-r
 | `src/metrics.py` | mIoU, accuracy |
 | `train.py`, `run_train.sh` | Training and experiments |
 | `scripts/eval.py` | Validation figures |
-| `demo.ipynb` | Interactive walkthrough |
 | `docs/Technical_Report.md` | This report |
 
 ### Reproduce
@@ -131,7 +130,6 @@ Hardware: Apple MPS. Metrics: **best** validation mIoU and pixel accuracy. Per-r
 pip install -r requirements.txt
 ./run_train.sh --experiment all --epochs 20
 python scripts/eval.py --checkpoint outputs/points_8000.pt --num-samples 3
-jupyter notebook demo.ipynb
 ```
 
 On macOS, use `./run_train.sh` (sets `KMP_DUPLICATE_LIB_OK=TRUE`) if OpenMP errors appear.

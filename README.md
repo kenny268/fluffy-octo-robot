@@ -14,7 +14,6 @@ Remote sensing segmentation usually needs expensive pixel-wise labels. This proj
 ├── requirements.txt
 ├── run_train.sh
 ├── train.py
-├── demo.ipynb
 ├── docs/Technical_Report.md
 ├── scripts/eval.py
 ├── src/
