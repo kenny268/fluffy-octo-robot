@@ -6,7 +6,6 @@ Point labels are sampled randomly from dense masks to mimic sparse annotation.
 
 from __future__ import annotations
 
-import json
 import random
 from pathlib import Path
 from typing import Literal
@@ -17,7 +16,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
 
-from .constants import COLOR_TO_CLASS, DATA_ROOT, IGNORE_INDEX, NUM_CLASSES
+from .constants import COLOR_TO_CLASS, DATA_ROOT, IGNORE_INDEX
 
 
 def rgb_mask_to_class_indices(mask_rgb: np.ndarray) -> np.ndarray:
@@ -33,7 +32,7 @@ def rgb_mask_to_class_indices(mask_rgb: np.ndarray) -> np.ndarray:
 def sample_point_labels(
     gt: np.ndarray,
     num_points: int,
-    strategy: Literal["random", "stratified"] = "stratified",
+    strategy: Literal["random", "stratified", "inverse_freq"] = "stratified",
     rng: random.Random | None = None,
     exclude_classes: tuple[int, ...] = (5,),
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -70,6 +69,30 @@ def sample_point_labels(
             selected.extend(coords[:per_class])
         rng.shuffle(selected)
         selected = selected[:num_points]
+    elif strategy == "inverse_freq":
+        classes_present = np.unique(gt[valid_mask])
+        pool: list[tuple[int, int]] = []
+        weights: list[float] = []
+        for cls in classes_present:
+            idx = np.where((gt == cls) & valid_mask)
+            coords = list(zip(idx[0], idx[1]))
+            freq = max(len(coords), 1)
+            for y, x in coords:
+                pool.append((y, x))
+                weights.append(1.0 / freq)
+        n = min(num_points, len(pool))
+        selected = []
+        if n > 0:
+            chosen = rng.choices(range(len(pool)), weights=weights, k=n)
+            seen = set()
+            for j in chosen:
+                if pool[j] not in seen:
+                    seen.add(pool[j])
+                    selected.append(pool[j])
+            if len(selected) < n:
+                remaining = [c for c in pool if c not in seen]
+                rng.shuffle(remaining)
+                selected.extend(remaining[: n - len(selected)])
     else:
         indices = rng.sample(range(len(ys)), min(num_points, len(ys)))
         selected = [(ys[i], xs[i]) for i in indices]
@@ -88,18 +111,25 @@ class AerialSegmentationDataset(Dataset):
         tile_ids: list[str] | None = None,
         image_size: tuple[int, int] = (256, 256),
         num_points: int = 500,
-        point_strategy: Literal["random", "stratified"] = "stratified",
+        point_strategy: Literal["random", "stratified", "inverse_freq"] = "stratified",
         augment: bool = False,
         seed: int = 42,
         use_full_mask: bool = False,
+        fixed_points_per_epoch: bool = False,
+        color_jitter: bool = True,
     ):
         self.root = Path(root)
         self.image_size = image_size
         self.num_points = num_points
         self.point_strategy = point_strategy
         self.augment = augment
+        self.base_seed = seed
         self.rng = random.Random(seed)
         self.use_full_mask = use_full_mask
+        self.fixed_points_per_epoch = fixed_points_per_epoch
+        self.color_jitter = color_jitter and augment
+        self._epoch = 0
+        self._pseudo_maps: dict[int, tuple[np.ndarray, np.ndarray]] = {}
 
         all_tiles = sorted(
             [p.name for p in self.root.iterdir() if p.is_dir() and p.name.startswith("Tile")]
@@ -115,6 +145,9 @@ class AerialSegmentationDataset(Dataset):
                 if mask_path.exists():
                     self.samples.append((img_path, mask_path))
 
+        self._color_jitter_tf = transforms.ColorJitter(
+            brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05
+        )
         self.img_transform = transforms.Compose(
             [
                 transforms.Resize(image_size, interpolation=transforms.InterpolationMode.BILINEAR),
@@ -126,6 +159,42 @@ class AerialSegmentationDataset(Dataset):
             image_size, interpolation=transforms.InterpolationMode.NEAREST
         )
 
+    def set_epoch(self, epoch: int) -> None:
+        """When fixed_points_per_epoch=True, point samples are stable within an epoch."""
+        self._epoch = epoch
+
+    def clear_pseudo_labels(self) -> None:
+        self._pseudo_maps.clear()
+
+    def set_pseudo_labels(
+        self,
+        sample_idx: int,
+        pseudo_label_map: np.ndarray,
+        pseudo_mask: np.ndarray,
+    ) -> None:
+        self._pseudo_maps[sample_idx] = (pseudo_label_map, pseudo_mask)
+
+    def _merge_pseudo(
+        self,
+        idx: int,
+        point_labels: np.ndarray,
+        label_mask: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if idx not in self._pseudo_maps:
+            return point_labels, label_mask
+        pl, pm = self._pseudo_maps[idx]
+        add = (pm > 0) & (label_mask == 0)
+        point_labels = point_labels.copy()
+        label_mask = label_mask.copy()
+        point_labels[add] = pl[add]
+        label_mask = np.maximum(label_mask, pm)
+        return point_labels, label_mask
+
+    def _point_rng(self, sample_idx: int) -> random.Random:
+        if self.fixed_points_per_epoch:
+            return random.Random(self.base_seed + self._epoch * 10_000 + sample_idx)
+        return self.rng
+
     def __len__(self) -> int:
         return len(self.samples)
 
@@ -134,9 +203,15 @@ class AerialSegmentationDataset(Dataset):
         image = Image.open(img_path).convert("RGB")
         mask_rgb = np.array(Image.open(mask_path).convert("RGB"))
 
-        if self.augment and self.rng.random() > 0.5:
-            image = image.transpose(Image.FLIP_LEFT_RIGHT)
-            mask_rgb = np.fliplr(mask_rgb).copy()
+        if self.augment:
+            if self.rng.random() > 0.5:
+                image = image.transpose(Image.FLIP_LEFT_RIGHT)
+                mask_rgb = np.fliplr(mask_rgb).copy()
+            if self.rng.random() > 0.5:
+                image = image.transpose(Image.FLIP_TOP_BOTTOM)
+                mask_rgb = np.flipud(mask_rgb).copy()
+            if self.color_jitter and self.rng.random() > 0.5:
+                image = self._color_jitter_tf(image)
 
         gt = rgb_mask_to_class_indices(mask_rgb)
         mask_pil = Image.fromarray(gt.astype(np.uint8), mode="L")
@@ -152,8 +227,9 @@ class AerialSegmentationDataset(Dataset):
                 gt_small,
                 self.num_points,
                 strategy=self.point_strategy,
-                rng=self.rng,
+                rng=self._point_rng(idx),
             )
+            point_labels, label_mask = self._merge_pseudo(idx, point_labels, label_mask)
 
         return {
             "image": image_t,
