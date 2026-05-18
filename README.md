@@ -1,104 +1,77 @@
 # Point-Supervised Remote Sensing Segmentation
 
-Technical assessment implementation: **partial cross-entropy loss** for semantic segmentation of aerial imagery under **sparse point supervision**.
+**Partial cross-entropy loss** for semantic segmentation of aerial imagery under **sparse point supervision**.
 
 ## Problem
 
-Remote sensing segmentation usually needs expensive pixel-wise labels. This project simulates cheaper **point annotations** (random samples from full masks), trains a **U-Net** with **partial CE** (loss only on labeled points), and compares factors that affect validation performance.
+Remote sensing segmentation usually needs expensive pixel-wise labels. This project simulates **point annotations** from masks, trains a **U-Net** with **partial CE** (loss only on labeled points), and measures how label budget and sampling strategy affect validation mIoU.
 
 ## Repository layout
 
 ```
 .
-├── README.md                 # This file
-├── Technical_Report.md       # Method + experiments (submission write-up)
+├── README.md
 ├── requirements.txt
-├── train.py                  # Training and experiment runner
-├── assessment_demo.ipynb     # Short demo (loss, point sampling, results)
+├── run_train.sh
+├── train.py
+├── demo.ipynb
+├── docs/Technical_Report.md
+├── scripts/eval.py
 ├── src/
-│   ├── partial_ce_loss.py    # Partial cross-entropy
-│   ├── dataset.py            # Data loading + point simulation
-│   ├── model.py              # U-Net
-│   ├── metrics.py            # mIoU, pixel accuracy
-│   └── constants.py            # Classes, colors, paths
-├── Data/
-│   └── aerial imagery/       # Images, masks, classes.json
-└── outputs/                  # Created by train.py (gitignored)
+├── Data/aerial imagery/
+└── outputs/          # checkpoints + metrics (gitignored except README)
 ```
-
-Local interview notes (structure, design decisions, function walkthroughs) live in **`prep/`** — that folder is **gitignored** and not pushed to GitHub.
 
 ## Dataset
 
-**Aerial imagery** under `Data/aerial imagery/`:
-
-- 8 tiles × 3 image parts = **24** RGB patches  
-- Polygon masks (PNG) with **6 classes**: Water, Land, Road, Building, Vegetation, Unlabeled  
-- Train/val split by tile: **Tile 1–6** train, **Tile 7–8** val (no tile leakage)
-
-Place the dataset in the path above before training. If the repo is too large for GitHub, host `Data/` separately (Drive/LFS) and document the download link here.
+8 tiles × 3 parts = **24** RGB patches; **6 classes** (Water, Land, Road, Building, Vegetation, Unlabeled). Default split: **Tiles 1–6** train, **7–8** val. Details: [Data/README.md](Data/README.md).
 
 ## Setup
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+# ResNet34 encoder (optional):
+pip install segmentation-models-pytorch
 ```
 
-Requires **Python 3.10+** and **PyTorch**.
+Python 3.10+, PyTorch.
 
-## Usage
+## Train & evaluate
 
-**Run all experiments** (point count + sampling strategy + full-supervised baseline):
+**Reproduce reported experiments:**
 
 ```bash
-python train.py --experiment all --epochs 20 --batch-size 4
+./run_train.sh --experiment all --epochs 20 --batch-size 4
 ```
 
-**Smoke test** (fewer epochs):
+**Other experiment groups:**
 
 ```bash
-python train.py --quick --experiment all --epochs 5
+./run_train.sh --experiment points      # 100 / 500 / 2000 / 8000 points
+./run_train.sh --experiment strategy    # random / stratified / inverse_freq
+./run_train.sh --experiment full        # full-pixel CE baseline
+./run_train.sh --experiment resnet34 --epochs 20 --batch-size 2
+./run_train.sh --experiment multiseed --epochs 15
+python scripts/eval.py --checkpoint outputs/points_8000.pt --num-samples 3
 ```
 
-**Single experiment groups:**
+**Quick smoke test:** `./run_train.sh --quick --experiment all --epochs 5`
 
-```bash
-python train.py --experiment points    # 100 / 500 / 2000 / 8000 points
-python train.py --experiment strategy  # random vs stratified @ 500 points
-python train.py --experiment full      # full-pixel CE baseline
-```
+**macOS:** use `./run_train.sh` if you hit OpenMP / `libomp` errors.
 
-Metrics are written to `outputs/experiment_results.json`. Checkpoints are saved as `outputs/<run_name>.pt`.
+## Training options
 
-**Notebook:**
-
-```bash
-jupyter notebook assessment_demo.ipynb
-```
-
-## Assessment mapping
-
-| Task | Deliverable |
+| Flag | Description |
 |------|-------------|
-| 1. Partial cross-entropy | `src/partial_ce_loss.py` |
-| 2. RSI data + point labels + network | `src/dataset.py`, `src/model.py`, `train.py` |
-| 3. Experiments + report | `train.py` experiments, `Technical_Report.md` |
+| `--class-weights` | Median-frequency weighted loss |
+| `--fixed-points-per-epoch` | Stable point samples within each epoch |
+| `--pseudo-labels` | Merge high-confidence predictions each epoch |
+| `--experiment crossval` | Leave-one-tile-out evaluation |
+| `--patience 8` | Early stopping (default on) |
+| `--arch resnet34_unet` | ImageNet ResNet34 encoder |
 
-## Experiments (summary)
+Artifacts: `outputs/experiment_results.json`, `outputs/<run>.pt`, `outputs/figures/`.
 
-Documented in `Technical_Report.md`:
+## Results
 
-1. **Number of point labels** per image (100, 500, 2000, …)  
-2. **Sampling strategy**: random vs **stratified** (balanced per class)
-
-Validation uses **full dense masks** (mIoU, accuracy) even though training uses sparse points.
-
-## Citation / context
-
-Partial CE for point supervision follows weakly supervised segmentation practice (e.g. Bearman et al.; recent RSI point-supervision work). See `Technical_Report.md` for formulation and discussion.
-
-## Author
-
-Submitted as part of a technical interview assessment.
+Best validation **mIoU 0.369** (`points_8000`, stratified, 20 epochs). A packaged copy for submission lives in **`Submit-ready/`**. Full tables: [docs/Technical_Report.md](docs/Technical_Report.md).
