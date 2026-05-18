@@ -1,4 +1,4 @@
-"""Lightweight U-Net for multi-class aerial semantic segmentation."""
+"""Segmentation models: lightweight U-Net and pretrained ResNet34-U-Net."""
 
 from __future__ import annotations
 
@@ -52,3 +52,34 @@ class UNet(nn.Module):
         d2 = self.dec2(torch.cat([self.up2(d3), e2], dim=1))
         d1 = self.dec1(torch.cat([self.up1(d2), e1], dim=1))
         return self.head(d1)
+
+
+def build_model(
+    arch: str = "unet",
+    num_classes: int = 6,
+    pretrained: bool = True,
+) -> nn.Module:
+    """
+    arch:
+      - unet: small from-scratch U-Net
+      - resnet34_unet: smp U-Net + ImageNet ResNet34 encoder
+    """
+    arch = arch.lower()
+    if arch == "unet":
+        return UNet(num_classes=num_classes)
+
+    if arch == "resnet34_unet":
+        try:
+            import segmentation_models_pytorch as smp
+        except ImportError as e:
+            raise ImportError(
+                "Install segmentation-models-pytorch: pip install segmentation-models-pytorch"
+            ) from e
+        return smp.Unet(
+            encoder_name="resnet34",
+            encoder_weights="imagenet" if pretrained else None,
+            in_channels=3,
+            classes=num_classes,
+        )
+
+    raise ValueError(f"Unknown arch: {arch}. Use 'unet' or 'resnet34_unet'.")
