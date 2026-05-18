@@ -25,10 +25,16 @@ class PartialCrossEntropyLoss(nn.Module):
         reduction: kept for API compatibility; always returns scalar mean over labeled pixels.
     """
 
-    def __init__(self, ignore_index: int = 255, label_smoothing: float = 0.0):
+    def __init__(
+        self,
+        ignore_index: int = 255,
+        label_smoothing: float = 0.0,
+        class_weights: torch.Tensor | None = None,
+    ):
         super().__init__()
         self.ignore_index = ignore_index
         self.label_smoothing = label_smoothing
+        self._class_weights = class_weights
 
     def forward(
         self,
@@ -58,9 +64,13 @@ class PartialCrossEntropyLoss(nn.Module):
         if valid.sum() == 0:
             return logits.sum() * 0.0
 
+        weight = (
+            self._class_weights.to(logits.device) if self._class_weights is not None else None
+        )
         loss_per_pixel = F.cross_entropy(
             logits_flat,
             targets_flat,
+            weight=weight,
             reduction="none",
             ignore_index=self.ignore_index,
             label_smoothing=self.label_smoothing,
@@ -74,6 +84,13 @@ def full_cross_entropy_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
     ignore_index: int = 255,
+    class_weights: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Standard pixel-wise CE on all non-ignored pixels (fully supervised baseline)."""
-    return F.cross_entropy(logits, targets.long(), ignore_index=ignore_index)
+    weight = class_weights.to(logits.device) if class_weights is not None else None
+    return F.cross_entropy(
+        logits,
+        targets.long(),
+        weight=weight,
+        ignore_index=ignore_index,
+    )
